@@ -3,23 +3,25 @@ import torch.nn as nn
 import os
 import stim
 import numpy as np
-from .tensor_tools import DEM_to_matrices
+from .tensor_tools import DEM_Matrices, DEM_to_matrices
 
 class Nbp(nn.Module):
     
     def __init__(self,
-                 circuit: stim.Circuit,
+                 circuit: stim.Circuit=None,
+                 matrices: DEM_Matrices=None,
                  layers: int = 20,
-                 weights: str = None,
+                 batch_size: int = 1,
                  loss_function: str = 'binary_cross_entropy',
-                 batch_size: int = 1):
+                 weights: str = None):
         
         super().__init__()
         
-        self.device = 'cpu'
-        
-        self.loss_fucntion = loss_function
-        
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.layers = layers
+        self.batch_size = batch_size
+        self.loss_function = loss_function
+            
         if circuit:
         
             self.circuit = circuit
@@ -30,17 +32,23 @@ class Nbp(nn.Module):
             self.H = self.matrices.check_matrix
             self.L = self.matrices.logical_matrix
             self.llrs = self.matrices.llrs
+            
+        else:
+            
+            self.H = matrices.check_matrix
+            self.L = matrices.logical_matrix
+            self.llrs = matrices.llrs
     
-        self.m = self.H.size()[0]
-        self.n = self.H.size()[1]
-        
-        self.layers = layers
-        self.batch_size = batch_size
+        self.m, self.n = self.H.size()
         
         if not weights:
             self.ini_weights_as_one()
         else:
-            self.load_weights(weights, self.device)
+            self.load_weights(weights)
+            
+        self.sigmoid = nn.Sigmoid()
+        self.softplus = nn.Softplus(beta=1.0, threshold=50)
+        self.softmax = nn.Softmax(dim=0)
             
     def ini_weights_as_one(self):
         
@@ -64,11 +72,14 @@ class Nbp(nn.Module):
         self.residual_weights.append(torch.zeros(self.layers, dtype=float, requires_grad=True, device=self.device))
         
         self.rhos.append(torch.ones(self.layers, dtype=float, requires_grad=True, device=self.device))
-        with torch.no_grad():
-            normalised_rhos = [rho / self.layers for rho in self.rhos]
-        self.rhos = normalised_rhos
+        # with torch.no_grad():
+        #     normalised_rhos = [rho / self.layers for rho in self.rhos]
+        # self.rhos = normalised_rhos
                 
     def save_weights(self, path: str):
+        
+        if not os.path.exists(path):
+            os.makedirs(path)
     
         file_de = 'weights_de.pt'
         file_llr = 'weights_llr.pt'
@@ -101,18 +112,18 @@ class Nbp(nn.Module):
         file_residuals = 'residual_weights.pt'
         file_rhos = 'rhos.pt'
         
-        self.weights_de = torch.load(os.path.join(path, file_de))
-        self.weights_llr = torch.load(os.path.join(path, file_llr))
+        self.weights_de = torch.load(os.path.join(path, file_de)).to(self.device)
+        self.weights_llr = torch.load(os.path.join(path, file_llr)).to(self.device)
         
-        self.marg_weights_de = torch.load(os.path.join(path, file_marg_de))
-        self.marg_weights_llr = torch.load(os.path.join(path, file_marg_llr))
+        self.marg_weights_de = torch.load(os.path.join(path, file_marg_de)).to(self.device)
+        self.marg_weights_llr = torch.load(os.path.join(path, file_marg_llr)).to(self.device)
         
-        self.residual_weights = torch.load(os.path.join(path, file_residuals))
-        self.rhos = torch.load(os.path.join(path, file_rhos))
+        self.residual_weights = torch.load(os.path.join(path, file_residuals)).to(self.device)
+        self.rhos = torch.load(os.path.join(path, file_rhos)).to(self.device)
         
     def update_error_nodes(self, incoming_messages, weights_llr, weights_de):
         
-        outgoing_messages = torch.zeros((self.batch_size, self.m, self.n))
+        outgoing_messages = torch.zeros((self.batch_size, self.m, self.n), dtype=float, device=self.device)
         
         weighted_messages = incoming_messages * weights_de
         
@@ -125,11 +136,10 @@ class Nbp(nn.Module):
     
     def update_detector_nodes(self, incoming_messages, syndromes):
         
-        divider = torch.tanh(incoming_messages/2)
+        divider = torch.tanh(incoming_messages / 2)
         divider = torch.where(divider == 0, torch.tensor(1.0), divider)
         
-        multiplicator = torch.pow(-1, syndromes)
-        multiplicator = multiplicator*self.H
+        multiplicator = torch.pow(-1, syndromes) * self.H
         
         outgoing_messages = 2*torch.atanh(torch.prod(divider, dim=2, keepdim=True) / divider)
         outgoing_messages *= multiplicator
@@ -139,7 +149,6 @@ class Nbp(nn.Module):
     def compute_beliefs(self, detector_to_error_messages, marg_weights_llr, marg_weights_de):
         
         weighted_messages = detector_to_error_messages * marg_weights_de
-        
         beliefs = torch.sum(weighted_messages, dim=1)
         beliefs += self.llrs*marg_weights_llr
         
@@ -147,33 +156,31 @@ class Nbp(nn.Module):
     
     def infer_predictions(self, beliefs):
         
-        predictions = torch.zeros_like(beliefs, dtype=float)
+        predictions = torch.zeros_like(beliefs, dtype=float, device=self.device)
         predictions[beliefs < 0] = 1
         
         return predictions
     
     def soft_vectors(self, beliefs):
-        
-        sigmoid = nn.Sigmoid()
-        soft_vectors = sigmoid(-beliefs)
-        
-        return soft_vectors
+        return self.sigmoid(-beliefs)
     
     def loss(self, beliefs, errors):
         
-        softplus = nn.Softplus(beta=1.0, threshold=50)
-        sigmoid = nn.Sigmoid()
-        
-        if self.loss_fucntion == 'binary_cross_entropy':
-            
-            loss = softplus(beliefs)
+        if self.loss_function == 'binary_cross_entropy':
+            loss = self.softplus(beliefs)
             loss -= (1 - errors) * beliefs
             loss = torch.sum(loss, dim=1)
             
-        if self.loss_fucntion == 'He=s':
-            
-            e = errors + sigmoid(-beliefs)
+        if self.loss_function == 'He=s':
+            e = errors + self.sigmoid(-beliefs)
             loss = self.H.double() @ e.T
+            loss = torch.abs(torch.sin(np.pi * loss / 2))
+            loss = torch.sum(loss, dim=0)
+            
+        if self.loss_function == '[HL]e=s':
+            e = errors + self.sigmoid(-beliefs)
+            H_L = torch.cat((self.H, self.L), dim=0)
+            loss = H_L.double() @ e.T
             loss = torch.abs(torch.sin(np.pi * loss / 2))
             loss = torch.sum(loss, dim=0)
             
@@ -181,10 +188,10 @@ class Nbp(nn.Module):
     
     def forward(self, syndromes, errors):
         
-        loss_array = torch.zeros(self.batch_size, self.layers).float()
-        
-        messages_en_to_dn = torch.zeros((self.batch_size, self.m, self.n))
-        messages_dn_to_en = torch.zeros((self.batch_size, self.m, self.n))
+        rhos_normalised = self.softmax(torch.cat(self.rhos)).squeeze()
+        loss_array = torch.zeros((self.batch_size, self.layers), dtype=float, device=self.device)
+        messages_en_to_dn = torch.zeros((self.batch_size, self.m, self.n), dtype=float, device=self.device)
+        messages_dn_to_en = torch.zeros((self.batch_size, self.m, self.n), dtype=float, device=self.device)
         
         for i in range(self.layers):
             
@@ -192,8 +199,7 @@ class Nbp(nn.Module):
             residual_messages = self.residual_weights[0][i] * messages_dn_to_en
             messages_dn_to_en = self.update_detector_nodes(messages_en_to_dn, syndromes) + residual_messages
             beliefs = self.compute_beliefs(messages_dn_to_en, self.marg_weights_llr[0], self.marg_weights_de[0])
-            
-            loss_array[:, i] = self.loss(beliefs, errors) * self.rhos[0][i]
+            loss_array[:, i] = self.loss(beliefs, errors) * rhos_normalised[i]
 
         loss_array = loss_array
         loss = torch.sum(loss_array, dim=1)
@@ -203,8 +209,8 @@ class Nbp(nn.Module):
     
     def decode(self, syndromes):
         
-        messages_en_to_dn = torch.zeros((self.batch_size, self.m, self.n))
-        messages_dn_to_en = torch.zeros((self.batch_size, self.m, self.n))
+        messages_en_to_dn = torch.zeros((self.batch_size, self.m, self.n), dtype=float, device=self.device)
+        messages_dn_to_en = torch.zeros((self.batch_size, self.m, self.n), dtype=float, device=self.device)
         
         for i in range(self.layers):
             
@@ -214,5 +220,6 @@ class Nbp(nn.Module):
             beliefs = self.compute_beliefs(messages_dn_to_en, self.marg_weights_llr[0], self.marg_weights_de[0])
         
         predictions = self.infer_predictions(beliefs)
+        predictions = ( predictions @ self.L ) % 2
         
         return predictions

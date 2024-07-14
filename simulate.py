@@ -1,7 +1,10 @@
 import stim
 import numpy as np
+import torch
 from tqdm import tqdm
-from decoders import Bp, BpOsd
+from decoders import Bp, BpOsd, Nbp
+from decoders.train_tools import optimization_step, training_loop
+from decoders.tensor_tools import DEM_to_matrices
 import csv
 import time
 import argparse
@@ -33,6 +36,8 @@ def load_circuits(folder):
     
     return noisy_circuits
 
+torch.autograd.set_detect_anomaly(True)
+
 def main():
     
     parser = argparse.ArgumentParser()
@@ -45,6 +50,12 @@ def main():
     parser.add_argument('-mss','--ms_scaling_factor', default=0.0, type=float)
     parser.add_argument('-om','--osd_method', default='OSD_CS')
     parser.add_argument('-oo','--osd_order', default=20, type=int)
+    
+    parser.add_argument('-bs', '--batch_size', default=120, type=int)
+    parser.add_argument('-l', '--layers', default=20, type=int)
+    parser.add_argument('-lf', '--loss_function', default='He=s', type=str)
+    parser.add_argument('-ms', '--minibatches', default=100, type=int)
+    parser.add_argument('-lr', '--learning_rate', default=100, type=int)
     
     parser.add_argument('-s','--shots', default=1000, type=int)
     
@@ -62,6 +73,12 @@ def main():
     OSD_METHOD = args.osd_method
     OSD_ORDER = args.osd_order
     
+    BATCH_SIZE = args.batch_size
+    LAYERS = args.layers
+    LOSS_FUNCTION = args.loss_function
+    MINIBATCHES = args.minibatches
+    LEARNING_RATE = args.learning_rate
+    
     SHOTS = args.shots
     
     IN_DIR = args.dir
@@ -77,7 +94,7 @@ def main():
         circuit = noisy_circuit[0]
         params = noisy_circuit[1]
         
-        detector_error_model = circuit.detector_error_model()
+        detector_error_model = circuit.detector_error_model(decompose_errors=False)
         sampler = detector_error_model.compile_sampler()
         syndromes, logical_flips, errors = sampler.sample(shots = SHOTS, return_errors=True)
         sampled_errors = np.argwhere(np.sum(errors,axis=1)>0).flatten()
@@ -91,12 +108,40 @@ def main():
                             osd_method = OSD_METHOD,
                             osd_order = OSD_ORDER)
             
-        elif DECODER == 'bp':
+        if DECODER == 'bp':
             
             decoder = Bp(model = circuit,
                          bp_method = BP_METHOD,
                          max_bp_iters = MAX_ITERATIONS,
                          ms_scaling_factor = SCALING_FACTOR)
+            
+        if DECODER == 'nbp':
+            
+            WEIGHTS_PATH = f'data/weights/{params['code']}_{params['distance']}_{params['rounds']}_{params['noise_model']}'
+            
+            if os.path.exists(WEIGHTS_PATH):
+            
+                decoder = Nbp(circuit=circuit,
+                              layers = LAYERS,
+                              batch_size = BATCH_SIZE,
+                              loss_function = LOSS_FUNCTION,
+                              weights = WEIGHTS_PATH)
+                
+            else:
+                
+                print('Training NBP')
+                
+                decoder = Nbp(circuit=circuit,
+                              layers = LAYERS,
+                              batch_size = BATCH_SIZE,
+                              loss_function = LOSS_FUNCTION)
+                
+                parameters = decoder.weights_llr + decoder.weights_de + decoder.marg_weights_llr + decoder.marg_weights_de + decoder.rhos + decoder.residual_weights
+                optimiser = torch.optim.Adam(parameters, lr=LEARNING_RATE)
+                loss = training_loop(decoder=decoder, 
+                                     optimizer=optimiser, 
+                                     mini_batches=MINIBATCHES, 
+                                     path=WEIGHTS_PATH)
             
         n_fails = 0
         
