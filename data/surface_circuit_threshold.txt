@@ -1,0 +1,2 @@
+code,distance,rounds,noise_model,error_rate,decoder,shots,fails,dec_time_per_shot
+surface,5,5,cl,0.0040,{'bposd'},1000,3,0.020424372987
