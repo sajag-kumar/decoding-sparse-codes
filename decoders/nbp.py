@@ -112,14 +112,14 @@ class Nbp(nn.Module):
         file_residuals = 'residual_weights.pt'
         file_rhos = 'rhos.pt'
         
-        self.weights_de = torch.load(os.path.join(path, file_de)).to(self.device)
-        self.weights_llr = torch.load(os.path.join(path, file_llr)).to(self.device)
+        self.weights_de = torch.load(os.path.join(path, file_de))
+        self.weights_llr = torch.load(os.path.join(path, file_llr))
         
-        self.marg_weights_de = torch.load(os.path.join(path, file_marg_de)).to(self.device)
-        self.marg_weights_llr = torch.load(os.path.join(path, file_marg_llr)).to(self.device)
+        self.marg_weights_de = torch.load(os.path.join(path, file_marg_de))
+        self.marg_weights_llr = torch.load(os.path.join(path, file_marg_llr))
         
-        self.residual_weights = torch.load(os.path.join(path, file_residuals)).to(self.device)
-        self.rhos = torch.load(os.path.join(path, file_rhos)).to(self.device)
+        self.residual_weights = torch.load(os.path.join(path, file_residuals))
+        self.rhos = torch.load(os.path.join(path, file_rhos))
         
     def update_error_nodes(self, incoming_messages, weights_llr, weights_de):
         
@@ -158,6 +158,7 @@ class Nbp(nn.Module):
         
         predictions = torch.zeros_like(beliefs, dtype=float, device=self.device)
         predictions[beliefs < 0] = 1
+        predictions = predictions.int()
         
         return predictions
     
@@ -198,7 +199,7 @@ class Nbp(nn.Module):
             messages_en_to_dn = self.update_error_nodes(messages_dn_to_en, self.weights_llr[i], self.weights_de[i])
             residual_messages = self.residual_weights[0][i] * messages_dn_to_en
             messages_dn_to_en = self.update_detector_nodes(messages_en_to_dn, syndromes) + residual_messages
-            beliefs = self.compute_beliefs(messages_dn_to_en, self.marg_weights_llr[0], self.marg_weights_de[0])
+            beliefs = self.compute_beliefs(messages_dn_to_en, self.marg_weights_llr[i], self.marg_weights_de[i])
             loss_array[:, i] = self.loss(beliefs, errors) * rhos_normalised[i]
 
         loss_array = loss_array
@@ -220,6 +221,6 @@ class Nbp(nn.Module):
             beliefs = self.compute_beliefs(messages_dn_to_en, self.marg_weights_llr[0], self.marg_weights_de[0])
         
         predictions = self.infer_predictions(beliefs)
-        predictions = ( predictions @ self.L ) % 2
+        predictions = ( self.L @ predictions.T ) % 2
         
         return predictions

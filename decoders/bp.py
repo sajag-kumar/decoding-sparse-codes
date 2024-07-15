@@ -16,9 +16,9 @@ class Bp:
                                 
                 self._matrices = DEM_to_matrices(self._model)
                 priors = self._matrices.priors
-                       
-                self._decoder = BpDecoder(self._matrices.check_matrix,
-                                          error_rate = priors,
+                                       
+                self._decoder = BpDecoder(pcm=self._matrices.check_matrix,
+                                          error_channel = priors,
                                           bp_method = bp_method,
                                           max_iter = max_bp_iters,
                                           ms_scaling_factor = ms_scaling_factor)
