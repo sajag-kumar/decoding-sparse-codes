@@ -82,11 +82,11 @@ def main(code, distances, error_rates, noise_model, experiment):
 
 if __name__ == '__main__':
     
-    distances = np.arange(3, 9, 2)
+    distances = [3]
     error_rates = np.arange(0.001, 0.011, 0.001)
     
     code = 'surface'
-    experiment = 'surface_circuit_threshold'
+    experiment = 'bp_bposd_nbp_comparison'
     noise_model = 'cl'
     
     main(code, distances, error_rates, noise_model, experiment)

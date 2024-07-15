@@ -85,7 +85,7 @@ def main():
     OUT_DIR = args.out
     
     FOLDER = f'{IN_DIR}/{EXPERIMENT}'
-    OUTFILE = f'{OUT_DIR}/{EXPERIMENT}.txt'
+    OUTFILE = f'{OUT_DIR}/{EXPERIMENT}.csv'
     
     noisy_circuits = load_circuits(FOLDER)
     
@@ -171,7 +171,7 @@ def main():
         decoding_duration = (time.perf_counter_ns() - decoding_start_time)
         dec_time_per_shot = (decoding_duration/SHOTS)/1E9
 
-        params |= {'decoder': {DECODER}, 'shots' : SHOTS, 'fails' : n_fails, 'dec_time_per_shot': dec_time_per_shot}
+        params |= {'decoder': DECODER, 'shots' : SHOTS, 'fails' : n_fails, 'dec_time_per_shot': dec_time_per_shot}
         
         print('')
         print(f'p_ler = {n_fails}/{SHOTS} = {n_fails/SHOTS}')
